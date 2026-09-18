@@ -4,7 +4,20 @@ import unittest
 from pathlib import Path
 
 from metaview_bullhorn.errors import ExtractionError
-from metaview_bullhorn.metaview_reader import MetaviewReader, conversation_id_from_url, find_email, normalise_datetime, parse_attendee
+from datetime import datetime
+
+from metaview_bullhorn.metaview_reader import (
+    ConversationSummary,
+    looks_like_attendee_line,
+    MetaviewReader,
+    conversation_id_from_url,
+    find_email,
+    is_unavailable_text,
+    normalise_datetime,
+    parse_attendee,
+    parse_attendee_line,
+    parse_metaview_date,
+)
 from metaview_bullhorn.selectors import DEFAULT_SELECTORS, load_selectors
 from tests.helpers import make_settings
 
@@ -13,6 +26,9 @@ class HelperTests(unittest.TestCase):
     def test_conversation_id(self):
         self.assertEqual(conversation_id_from_url("https://app.metaview.test/conversations/abc-123?x=1"), "abc-123")
         self.assertEqual(conversation_id_from_url("/meetings/m_9"), "m_9")
+        self.assertEqual(conversation_id_from_url("https://my.metaview.app/notes/n-77?tab=x"), "n-77")
+        with self.assertRaises(ExtractionError):
+            conversation_id_from_url("https://my.metaview.app/notes?reconnect=true")
         with self.assertRaises(ExtractionError) as ctx:
             conversation_id_from_url("https://app.metaview.test/settings")
         self.assertEqual(ctx.exception.field, "id")
@@ -24,9 +40,51 @@ class HelperTests(unittest.TestCase):
 
     def test_normalise_datetime(self):
         self.assertEqual(normalise_datetime("2026-09-17T10:30:00Z", "ignored"), "2026-09-17T10:30+00:00")
-        self.assertEqual(normalise_datetime(None, " 17 Sep 2026, 10:30 "), "17 Sep 2026, 10:30")
+        self.assertEqual(normalise_datetime(None, " 17 Sep 2026, 10:30 "), "2026-09-17T10:30")
+        self.assertEqual(normalise_datetime(None, " last Tuesday "), "last Tuesday")
         with self.assertRaises(ExtractionError):
             normalise_datetime(None, "  ")
+
+    def test_parse_metaview_date(self):
+        now = datetime(2026, 9, 18, 0, 2)
+        self.assertEqual(parse_metaview_date("Yesterday, 2:06 pm", now), "2026-09-17T14:06")
+        self.assertEqual(parse_metaview_date("Today, 9:30 am", now), "2026-09-18T09:30")
+        self.assertEqual(parse_metaview_date("Yesterday, 12:15 am", now), "2026-09-17T00:15")
+        self.assertEqual(parse_metaview_date("16 September, 3:00 pm", now), "2026-09-16T15:00")
+        self.assertEqual(parse_metaview_date("16 Sept, 12:00 pm", now), "2026-09-16T12:00")
+        self.assertEqual(parse_metaview_date("2 January, 10:00 am", now), "2026-01-02T10:00")
+        self.assertEqual(parse_metaview_date("30 December, 10:00 am", now), "2025-12-30T10:00")
+        self.assertEqual(parse_metaview_date("16 September 2025, 3:00 pm", now), "2025-09-16T15:00")
+        self.assertEqual(parse_metaview_date("2026-09-17T10:30:00Z", now), "2026-09-17T10:30+00:00")
+        self.assertIsNone(parse_metaview_date("31 February, 3:00 pm", now))
+        self.assertIsNone(parse_metaview_date("last week", now))
+        self.assertIsNone(parse_metaview_date("", now))
+        self.assertEqual(normalise_datetime(None, "Yesterday, 2:06 pm", now), "2026-09-17T14:06")
+        self.assertEqual(normalise_datetime(None, "some other text", now), "some other text")
+
+    def test_parse_attendee_line(self):
+        names = lambda line: [(a.name, a.email) for a in parse_attendee_line(line)]
+        self.assertEqual(names("Austin Dupuy with Elle Zoma and Anthony Erondu"), [("Austin Dupuy", None), ("Elle Zoma", None), ("Anthony Erondu", None)])
+        self.assertEqual(names("Jackie Fredette with Anthony Erondu"), [("Jackie Fredette", None), ("Anthony Erondu", None)])
+        self.assertEqual(names("Deant@malli.com Mallis with Anthony Erondu"), [("Mallis", "deant@malli.com"), ("Anthony Erondu", None)])
+        self.assertEqual(names("jane@example.com with Anthony Erondu")[0], ("jane", "jane@example.com"))
+        self.assertEqual(
+            names("Elle Zoma, Lucas Alvarado, Minesh Patel, Maris Colton, James Warren, Anthony Erondu ..."),
+            [("Elle Zoma", None), ("Lucas Alvarado", None), ("Minesh Patel", None), ("Maris Colton", None), ("James Warren", None), ("Anthony Erondu", None)],
+        )
+        self.assertEqual(names("Zhiwei with Anthony Erondu"), [("Zhiwei", None), ("Anthony Erondu", None)])
+        self.assertEqual(names("Anthony Erondu and Anthony Erondu"), [("Anthony Erondu", None)])
+        self.assertEqual(parse_attendee_line("   "), [])
+
+    def test_looks_like_attendee_line(self):
+        self.assertTrue(looks_like_attendee_line("Jackie Fredette and Anthony Erondu"))
+        self.assertTrue(looks_like_attendee_line("Zhiwei with Anthony Erondu"))
+        self.assertFalse(looks_like_attendee_line("Tuesday Kick Off"))
+        self.assertFalse(looks_like_attendee_line("Austin x Anthony Catch up"))
+
+    def test_unavailable_markers(self):
+        self.assertTrue(is_unavailable_text("Dean x Anthony\nUnavailable\nWe couldn't detect any conversation in this meeting."))
+        self.assertFalse(is_unavailable_text("Jackie Fredette with Anthony Erondu"))
 
     def test_parse_attendee(self):
         a = parse_attendee("Jane Doe", "mailto:jane@example.com", "<li>Jane Doe</li>")
@@ -164,7 +222,76 @@ class FetchConversationTests(unittest.TestCase):
         with self.assertRaises(ExtractionError) as ctx:
             reader_with(page).fetch_conversation("https://app.metaview.test/conversations/c1")
         self.assertEqual(ctx.exception.field, "title")
-        self.assertIn("empty", ctx.exception.detail)
+        self.assertIn("list row had no title", ctx.exception.detail)
+
+    def test_summary_fallback_when_detail_selectors_miss(self):
+        page = detail_page(**{"[data-testid='conversation-title']": [], "time[datetime]": [], "[data-testid='attendee']": []})
+        summary = ConversationSummary("c1", "https://my.metaview.app/notes/c1", "Jackie Fredette and Anthony Erondu", "Jackie Fredette with Anthony Erondu", "Yesterday, 1:20 pm")
+        conv = reader_with(page).fetch_conversation(summary.url, summary)
+        self.assertEqual(conv.title, "Jackie Fredette and Anthony Erondu")
+        self.assertEqual([a.name for a in conv.attendees], ["Jackie Fredette", "Anthony Erondu"])
+        self.assertRegex(conv.occurred_at, r"^\d{4}-\d{2}-\d{2}T13:20$")
+        # attendees from the title when the row had no attendee line
+        summary.attendee_line = ""
+        conv = reader_with(detail_page(**{"[data-testid='attendee']": []})).fetch_conversation(summary.url, summary)
+        self.assertEqual([a.name for a in conv.attendees], ["Jackie Fredette", "Anthony Erondu"])
+        # and still a named error when neither source has attendees
+        summary.title = "Tuesday Kick Off"
+        with self.assertRaises(ExtractionError) as ctx:
+            reader_with(detail_page(**{"[data-testid='attendee']": []})).fetch_conversation(summary.url, summary)
+        self.assertEqual(ctx.exception.field, "attendees")
+
+    def test_detail_single_attendee_line_element(self):
+        page = detail_page(**{"[data-testid='attendee']": [FakeElement("Austin Dupuy with Elle Zoma and Anthony Erondu")]})
+        conv = reader_with(page).fetch_conversation("https://my.metaview.app/notes/c1")
+        self.assertEqual([a.name for a in conv.attendees], ["Austin Dupuy", "Elle Zoma", "Anthony Erondu"])
+
+    def test_list_rows(self):
+        def row(href, text, unavailable=False):
+            children = {"a[href*='/notes/']": [FakeElement(attrs={"href": href})]}
+            if unavailable:
+                children["[class*='unavailable']"] = [FakeElement("Unavailable")]
+            return FakeElement(text, children=children)
+
+        rows = [
+            row("/notes/r1", "Deant@malli.com Mallis with Anthony Erondu\nYesterday, 2:06 pm"),
+            row("/notes/r2", "Dean x Anthony\nDeant@malli.com Mallis with Anthony Erondu\nUnavailable\nWe couldn't detect any conversation in this meeting.\nYesterday, 2:00 pm", unavailable=True),
+            row("/notes/r3", "Austin/ Elle/ Anthony\nAustin Dupuy with Elle Zoma and Anthony Erondu\n16 September, 3:00 pm"),
+            row("/notes/r3", "duplicate"),
+            FakeElement("row without link"),
+        ]
+        page = FakePage({"[role='row']": rows, "input[type='password']": []}, url="https://my.metaview.app/notes")
+        reader = reader_with(page)
+        reader.settings.metaview_base_url = "https://my.metaview.app"
+        summaries = reader.list_conversations()
+        self.assertEqual([s.id for s in summaries], ["r1", "r2", "r3"])
+        self.assertEqual(summaries[0].title, "Deant@malli.com Mallis with Anthony Erondu")
+        self.assertEqual(summaries[0].date_text, "Yesterday, 2:06 pm")
+        self.assertTrue(summaries[1].unavailable)
+        self.assertFalse(summaries[0].unavailable)
+        self.assertEqual(summaries[2].title, "Austin/ Elle/ Anthony")
+        self.assertEqual(summaries[2].attendee_line, "Austin Dupuy with Elle Zoma and Anthony Erondu")
+        self.assertEqual(summaries[2].date_text, "16 September, 3:00 pm")
+        self.assertEqual(summaries[2].url, "https://my.metaview.app/notes/r3")
+        self.assertEqual(len(reader.list_conversations(limit=2)), 2)
+
+    def test_read_all_skips_unavailable(self):
+        class ListOnlyReader(MetaviewReader):
+            fetched = []
+
+            def list_conversations(self, limit=None):
+                return [
+                    ConversationSummary("a", "u/a", "A", "", "", unavailable=False),
+                    ConversationSummary("b", "u/b", "B", "", "", unavailable=True),
+                ]
+
+            def fetch_conversation(self, url, summary=None):
+                self.fetched.append(summary.id)
+                return summary
+
+        reader = ListOnlyReader(make_settings())
+        self.assertEqual([c.id for c in reader.read_all()], ["a"])
+        self.assertEqual(reader.fetched, ["a"])
 
     def test_list_urls_dedupes_and_limits(self):
         links = [
@@ -174,8 +301,7 @@ class FetchConversationTests(unittest.TestCase):
             FakeElement(attrs={"href": "/settings"}),
             FakeElement(attrs={"href": "/conversations/c"}),
         ]
-        page = FakePage({"a[href*='/conversations/']": links}, url="https://app.metaview.test/conversations")
-        page.children["input[type='password']"] = []
+        page = FakePage({"a[href*='/conversations/']": links, "[role='row']": [], "input[type='password']": []}, url="https://app.metaview.test/conversations")
         urls = reader_with(page).list_conversation_urls(limit=2)
         self.assertEqual(urls, ["https://app.metaview.test/conversations/a", "https://app.metaview.test/conversations/b"])
 
@@ -189,7 +315,7 @@ class FetchConversationTests(unittest.TestCase):
         page = FakePage({"input[type='password']": []}, url="https://app.metaview.test/conversations")
         with self.assertRaises(ExtractionError) as ctx:
             reader_with(page).list_conversation_urls()
-        self.assertEqual(ctx.exception.field, "list.links")
+        self.assertEqual(ctx.exception.field, "list.rows")
 
 
 if __name__ == "__main__":

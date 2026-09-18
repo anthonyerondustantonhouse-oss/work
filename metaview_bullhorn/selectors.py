@@ -14,15 +14,33 @@ import json
 from pathlib import Path
 
 DEFAULT_SELECTORS: dict[str, list[str]] = {
-    # --- conversations list page ---
-    # Anchors that lead to a single conversation. The href is used as the id source.
+    # --- conversations list page ("My conversations" at /notes) ---
+    # One element per row. Each row shows: thumbnail, title, an attendee line
+    # ("Austin Dupuy with Elle Zoma and Anthony Erondu"), a relative date
+    # ("Yesterday, 2:06 pm" / "16 September, 3:00 pm") and sometimes an
+    # "Unavailable" badge when no conversation was detected.
+    "list.rows": [
+        "[data-testid='conversation-row']",
+        "[role='row']",
+        "[role='listitem']",
+        "main li",
+    ],
+    # Within a row: the link to the conversation, the title, the attendee line, the date.
+    "row.link": ["a[href*='/notes/']", "a[href*='/conversations/']", "a[href]"],
+    "row.title": ["[data-testid='conversation-title']", "h3", "h2", "[class*='title']", "a"],
+    "row.subtitle": ["[data-testid='conversation-attendees']", "[class*='subtitle']", "[class*='attendee']", "[class*='participant']", "p"],
+    "row.date": ["time", "[data-testid='conversation-date']", "[class*='date']", "[class*='time']"],
+    "row.unavailable": ["[data-testid='unavailable']", "[class*='unavailable']"],
+    # Fallback when no row selector matches: bare anchors that lead to a conversation.
     "list.links": [
-        "[data-testid='conversation-list'] a[href*='/conversations/']",
+        "a[href*='/notes/']",
         "a[href*='/conversations/']",
         "a[href*='/conversation/']",
         "a[href*='/meetings/']",
     ],
     # --- conversation detail page ---
+    # Title, date and attendees fall back to what the list row showed when the
+    # detail selectors find nothing; the note body must come from the detail page.
     "detail.title": [
         "[data-testid='conversation-title']",
         "main h1",
@@ -38,6 +56,7 @@ DEFAULT_SELECTORS: dict[str, list[str]] = {
     # One element per attendee.
     "detail.attendees": [
         "[data-testid='attendee']",
+        "[data-testid='conversation-attendees']",
         "[data-testid='participant']",
         "[data-testid='attendees'] li",
         "[data-testid='participants'] li",
@@ -73,7 +92,7 @@ DEFAULT_SELECTORS: dict[str, list[str]] = {
 }
 
 # Conversation id is taken from the URL with this pattern (first capture group).
-CONVERSATION_ID_PATTERN = r"/(?:conversations?|meetings?)/([A-Za-z0-9_\-]+)"
+CONVERSATION_ID_PATTERN = r"/(?:notes|conversations?|meetings?)/([A-Za-z0-9_\-]+)"
 
 
 def load_selectors(path: str | Path | None) -> dict[str, list[str]]:
