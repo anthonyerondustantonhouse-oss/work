@@ -27,12 +27,31 @@ Python 3.11+, Playwright (persistent profile, so the Metaview login survives bet
 
 ## Setup
 
+macOS / Linux:
+
 ```bash
+git clone https://github.com/anthonyerondustantonhouse-oss/work.git metaview-bullhorn-sync
+cd metaview-bullhorn-sync
 python3.11 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 playwright install chromium
 cp .env.example .env      # fill in; .env is git-ignored and must stay out of version control
 ```
+
+Windows PowerShell (one command per line; `&&` is not valid in Windows PowerShell 5.1):
+
+```powershell
+git clone https://github.com/anthonyerondustantonhouse-oss/work.git metaview-bullhorn-sync
+cd metaview-bullhorn-sync
+py -3.11 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -e ".[dev]"
+playwright install chromium
+Copy-Item .env.example .env
+notepad .env              # fill in
+```
+
+If `Activate.ps1` is blocked, run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once. If `py -3.11` is not found, install Python 3.11+ from python.org and tick "Add to PATH". Every `mvsync` command below can also be run as `python -m metaview_bullhorn` from the repo folder.
 
 Bullhorn credentials are data-centre specific. Look yours up with `https://rest.bullhornstaffing.com/rest-services/loginInfo?username=<api user>` and set `BULLHORN_AUTH_URL`, `BULLHORN_REST_TOKEN_URL` and `BULLHORN_REST_LOGIN_URL` from the `oauthUrl` / `restUrl` it returns.
 
